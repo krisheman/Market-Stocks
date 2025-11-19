@@ -1,12 +1,13 @@
 name: Market Scanner Every Minute
 
 on:
+  push:                   # Added this so it runs when you save the file
   schedule:
-    - cron: "*/5 * * * *"   # GitHub minimum schedule
-  workflow_dispatch:
+    - cron: "*/5 * * * *" # Runs every 5 minutes
+  workflow_dispatch:      # Allows manual button click
 
 jobs:
-  run:
+  run-scanner:            # Renamed job from 'run' to 'run-scanner' to avoid confusion
     runs-on: ubuntu-latest
 
     steps:
@@ -27,8 +28,16 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          for i in {1..5}; do
-            echo "Running at $(date)"
+          # Run the loop 5 times (0 to 4)
+          for i in {0..4}; do
+            echo "Loop run: $i - Running at $(date)"
+            
+            # Run your script
             python market_scanner.py
-            sleep 60
+            
+            # Only sleep if this is not the last run (to save seconds)
+            if [ "$i" -lt 4 ]; then
+              echo "Sleeping for 60 seconds..."
+              sleep 60
+            fi
           done
