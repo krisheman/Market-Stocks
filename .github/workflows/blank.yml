@@ -1,0 +1,114 @@
+import os
+import datetime
+import requests
+import pandas as pd
+import yfinance as yf
+from textblob import TextBlob
+
+
+# --- SECRETS FROM GITHUB ACTIONS ---
+TELEGRAM_TOKEN = os.getenv("7756398872:AAHanVqt-vCA_rToXNJIHYle4CGo3JKhj34")
+TELEGRAM_CHAT_ID = os.getenv("5410110707")
+
+# --- CONFIG ---
+WATCHLIST = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ']
+VOLUME_THRESHOLD_MULTIPLIER = 2.0
+SENTIMENT_THRESHOLD = 0.2
+
+
+def send_telegram_message(message: str):
+    """Send alert to Telegram bot."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials not set.")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+
+    try:
+        requests.post(url, data=payload, timeout=5)
+    except Exception as e:
+        print(f"Error sending Telegram message: {e}")
+
+
+def get_news_sentiment(ticker: str) -> float:
+    """Fetch latest news titles & compute average sentiment."""
+    try:
+        news = yf.Ticker(ticker).news
+        if not news:
+            return 0
+
+        scores = [
+            TextBlob(article.get("title", "")).sentiment.polarity
+            for article in news[:5]
+        ]
+
+        return sum(scores) / len(scores) if scores else 0
+
+    except Exception:
+        return 0
+
+
+def check_market_conditions():
+    print(f"--- Running Scan @ {datetime.datetime.now()} ---")
+
+    for ticker in WATCHLIST:
+        try:
+            data = yf.download(ticker, period="1d", interval="1m", progress=False)
+
+            if data.empty:
+                continue
+
+            # Fix multi-index on some data sources
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+
+            last_candle = data.iloc[-2]
+            current_volume = float(last_candle["Volume"])
+
+            open_price = float(last_candle["Open"])
+            close_price = float(last_candle["Close"])
+
+            # Identify candle type
+            is_green = close_price > open_price
+            volume_type = "BUY" if is_green else "SELL"
+
+            # 20-minute avg volume
+            avg_volume = data["Volume"].tail(20).mean()
+
+            # Check volume anomaly
+            vol_alert = current_volume > (avg_volume * VOLUME_THRESHOLD_MULTIPLIER)
+
+            # Check sentiment
+            sentiment = get_news_sentiment(ticker)
+            news_alert = sentiment > SENTIMENT_THRESHOLD
+
+            # Send alerts
+            if vol_alert:
+                icon = "🚀" if is_green else "🔻"
+                msg = (
+                    f"{icon} [{volume_type} ALERT] {ticker}\n"
+                    f"Vol: {int(current_volume)} (Avg: {int(avg_volume)})\n"
+                    f"Price: ${close_price:.2f}"
+                )
+
+                print(msg)
+                send_telegram_message(msg)
+
+            if news_alert:
+                msg = (
+                    f"ℹ️ [NEWS] {ticker}\n"
+                    f"Positive sentiment detected.\n"
+                    f"Score: {sentiment:.2f}"
+                )
+
+                print(msg)
+                send_telegram_message(msg)
+
+        except Exception as e:
+            print(f"Error scanning {ticker}: {e}")
+
+
+if __name__ == "__main__":
+    send_telegram_message("Scanner Online: Cloud job started.")
+    check_market_conditions()
