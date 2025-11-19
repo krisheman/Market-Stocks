@@ -1,15 +1,16 @@
 import sys
+import os
 import yfinance as yf
 from textblob import TextBlob
 import pandas as pd
-import schedule
 import time
 import datetime
 import requests
 
-# --- CONFIGURATION (FILL THESE IN) ---
-TELEGRAM_TOKEN = "7756398872:AAHanVqt-vCA_rToXNJIHYle4CGo3JKhj34"
-TELEGRAM_CHAT_ID = "5410110707"
+# --- CONFIGURATION ---
+# Read from GitHub Secrets (Environment Variables)
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 WATCHLIST = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ']
 VOLUME_THRESHOLD_MULTIPLIER = 2.0
@@ -17,8 +18,8 @@ SENTIMENT_THRESHOLD = 0.2
 
 def send_telegram_message(message):
     """Sends a text to your phone via Telegram"""
-    if TELEGRAM_TOKEN == "PASTE_YOUR_TOKEN_HERE":
-        # Silent fail if not configured, just to keep the loop running
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Error: Telegram tokens not found in Environment Variables.")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -54,41 +55,34 @@ def check_market_conditions():
             data = yf.download(ticker, period='1d', interval='1m', progress=False, auto_adjust=True)
 
             if data.empty:
+                print(f"No data for {ticker}")
                 continue
 
-            # Flatten columns if needed (The Fix)
+            # Flatten columns if needed
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
 
-            # Get the last completed minute candle
-            # Use -2 to get the last *completed* candle, as the last one might be partial
-            if len(data) < 2: # Ensure there are at least 2 candles to avoid IndexError
+            # Ensure we have enough data
+            if len(data) < 20: 
                 continue
 
-            last_candle = data.iloc[-2]
+            last_candle = data.iloc[-2] # Last completed candle
             current_volume = float(last_candle['Volume'])
 
-            # Get Price Action
             open_price = float(last_candle['Open'])
             close_price = float(last_candle['Close'])
 
-            # DETERMINING BUY VS SELL VOLUME
             is_green_candle = close_price > open_price
             volume_type = "BUY" if is_green_candle else "SELL"
 
-            # Calculate Average Volume (last 20 minutes)
-            # Ensure there are enough data points for average volume
-            avg_volume_data = data['Volume'].tail(20)
-            if len(avg_volume_data) < 20: # If less than 20 min data, use all available
-                avg_volume = avg_volume_data.mean()
-            else:
-                avg_volume = avg_volume_data.iloc[:-1].mean() # Exclude current minute from average
-
+            # Calculate Average Volume (last 20 minutes excluding current)
+            avg_volume = data['Volume'].iloc[-22:-2].mean()
 
             # 2. Check for Volume Anomaly
             vol_alert = False
             if avg_volume > 0 and current_volume > (avg_volume * VOLUME_THRESHOLD_MULTIPLIER):
                 vol_alert = True
+                print(f"Volume Alert found for {ticker}")
 
             # 3. Check for Sentiment
             sentiment_score = get_news_sentiment(ticker)
@@ -96,41 +90,25 @@ def check_market_conditions():
             if sentiment_score > SENTIMENT_THRESHOLD:
                 news_alert = True
 
-            # 4. TRIGGER LOGIC WITH BUY/SELL CONTEXT & TELEGRAM ALERTS
+            # 4. TRIGGER LOGIC
             if vol_alert:
-                # Determine direction icon
                 icon = "🚀" if volume_type == "BUY" else "🔻"
-
-                # Create message
                 msg = (f"{icon} [{volume_type} ALERT] {ticker}\n"
                        f"Vol: {int(current_volume)} (Avg: {int(avg_volume)})\n"
                        f"Price: ${close_price:.2f}")
-
-                # Print to console
                 print(msg)
-                # Send to Phone
                 send_telegram_message(msg)
 
             if news_alert:
                 msg = (f"ℹ️ [NEWS INFO] {ticker}\n"
                        f"Positive Sentiment Detected.\n"
                        f"Score: {sentiment_score:.2f}")
-
                 print(msg)
                 send_telegram_message(msg)
 
         except Exception as e:
             print(f"Error scanning {ticker}: {e}")
 
-# Send a test message on startup
-send_telegram_message("System Online: Market Scanner is running.")
-
-# Schedule the scanner to run every 1 minute
-schedule.every(1).minutes.do(check_market_conditions)
-
-print("System Initialized. Searching for early signals...")
-
-# Run loop
-while True:
-    schedule.run_pending()
-    time.sleep(1)
+# Run ONCE and exit. The GitHub YAML handles the loop.
+if __name__ == "__main__":
+    check_market_conditions()
